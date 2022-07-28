@@ -1,0 +1,273 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "metadata": {
+        "description": "This template is setting up the iot hub and a edge device resources. The following Services are created in the following order:
+        1. Iot Hub
+        2. Edge Device VM"
+    },
+    "parameters": {
+        "environment": {
+            "type": "string",
+            "defaultValue": "dev",
+            "allowedValues": [
+                "prod",
+                "test",
+                "dev"
+            ],
+            "metadata": {
+                "description": "The environment stage"
+            }
+        },
+        "applicationShortName": {
+            "type": "string",
+            "metadata": {
+                "description": "The short name of the application"
+            }
+        },
+        "location": {
+            "type": "string",
+            "defaultValue": "westeurope",
+            "metadata": {
+                "description": "The Resource Location"
+            }
+        },
+        "edgeVmAdminUser": {
+            "type": "string",
+            "defaultValue": "azadmin",
+            "metadata": {
+                "description": "The User for the vm login"
+            }
+        },
+        "edgeVmAdminPassword": {
+            "type": "securestring",
+            "metadata": {
+                "description": "The passwort for the vm login"
+            }
+        },
+        "edgeVmConnectionString": {
+            "type": "SecureString",
+            "metadata": {
+                "description": "IoT Edge Device Connection String. Git it with cli: az iot hub device-identity connection-string show --device-id [edgeDeviceName] --hub-name [iotHubName] -o tsv"
+            }
+        }
+    },
+    "variables": {
+        "middleName": "edge",
+        "edgeNsgName": "[toLower(concat(parameters('applicationShortName'), '-', variables('middleName'), '-', parameters('environment'), '-nsg'))]",
+        "edgeVnetName": "[toLower(concat(parameters('applicationShortName'), '-', variables('middleName'), '-', parameters('environment'), '-vnet'))]",
+        "edgeVnetSubnetName": "[toLower(concat(parameters('applicationShortName'), '-', variables('middleName'), '-', parameters('environment'), '-subnet'))]",
+        "edgeNicName": "[toLower(concat(parameters('applicationShortName'), '-', variables('middleName'), '-', parameters('environment'), '-nic'))]",
+        "edgePublicIpName": "[toLower(concat(parameters('applicationShortName'), '-', variables('middleName'), '-', parameters('environment'), '-ip'))]",
+        "edgeVmDiskName": "[toLower(concat(parameters('applicationShortName'), '-', variables('middleName'), '-', parameters('environment'), '-disk'))]",
+        "edgeVmName": "[toLower(concat(parameters('applicationShortName'), '-', variables('middleName'), '-', parameters('environment'), '-vm'))]",
+        "dcs": "[parameters('edgeVmConnectionString')]"
+    },
+    "resources": [
+        {
+            // ╔══════════════════════════════════════════════════════════╗
+            // ║            Create Edge Device 4 simulation               ║
+            // ╚══════════════════════════════════════════════════════════╝
+            // Security Group with allowed ssh
+            "type": "Microsoft.Network/networkSecurityGroups",
+            "apiVersion": "2020-11-01",
+            "name": "[variables('edgeNsgName')]",
+            "location": "[parameters('location')]",
+            "tags": {
+                "environment": "[parameters('environment')]",
+                "application": "[parameters('applicationShortName')]"
+            },
+            "properties": {
+                "securityRules": [
+                    {
+                        "name": "allow-ssh",
+                        "properties": {
+                            "protocol": "Tcp",
+                            "sourcePortRange": "*",
+                            "destinationPortRange": "22",
+                            "sourceAddressPrefix": "*",
+                            "destinationAddressPrefix": "*",
+                            "access": "Allow",
+                            "priority": 1000,
+                            "direction": "Inbound",
+                            "sourcePortRanges": [],
+                            "destinationPortRanges": [],
+                            "sourceAddressPrefixes": [],
+                            "destinationAddressPrefixes": []
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            // Virtual Network the Vm's are in
+            "type": "Microsoft.Network/virtualNetworks",
+            "apiVersion": "2020-11-01",
+            "name": "[variables('edgeVnetName')]",
+            "location": "[parameters('location')]",
+            "tags": {
+                "environment": "[parameters('environment')]",
+                "application": "[parameters('applicationShortName')]"
+            },
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/networkSecurityGroups', variables('edgeNsgName'))]"
+            ],
+            "properties": {
+                "addressSpace": {
+                    "addressPrefixes": [
+                        "10.0.0.0/16"
+                    ]
+                },
+                "subnets": [
+                    {
+                        "name": "[variables('edgeVnetSubnetName')]",
+                        "properties": {
+                            "addressPrefix": "10.0.0.0/24",
+                            "networkSecurityGroup": {
+                                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('edgeNsgName'))]"
+                            },
+                            "privateEndpointNetworkPolicies": "Enabled",
+                            "privateLinkServiceNetworkPolicies": "Enabled"
+                        }
+                    },
+                    {
+                        // A subnet for Bastion access. it must be at least /26 and have exactly this name
+                        "name": "AzureBastionSubnet",
+                        "properties": {
+                            "addressPrefix": "10.0.1.0/26",
+                            "privateEndpointNetworkPolicies": "Enabled",
+                            "privateLinkServiceNetworkPolicies": "Enabled"
+                        }
+                    }
+                ],
+                "virtualNetworkPeerings": [],
+                "enableDdosProtection": false
+            }
+        },
+        {
+            "apiVersion": "2015-06-15",
+            "type": "Microsoft.Network/publicIPAddresses",
+            "name": "[variables('edgePublicIpName')]",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "publicIPAllocationMethod": "Dynamic",
+                "dnsSettings": {
+                    "domainNameLabel": "[variables('edgeVmName')]"
+                }
+            }
+        },
+        {
+            // The network interface for the VM
+            "type": "Microsoft.Network/networkInterfaces",
+            "apiVersion": "2020-11-01",
+            "name": "[variables('edgeNicName')]",
+            "location": "[parameters('location')]",
+            "tags": {
+                "environment": "[parameters('environment')]",
+                "application": "[parameters('applicationShortName')]"
+            },
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/virtualNetworks', variables('edgeVnetName'))]",
+                "[concat('Microsoft.Network/publicIPAddresses/', variables('edgePublicIpName'))]"
+            ],
+            "properties": {
+                "ipConfigurations": [
+                    {
+                        "name": "ipconfig1",
+                        "properties": {
+                            "privateIPAllocationMethod": "Dynamic",
+                            "publicIPAddress": {
+                              "id": "[resourceId('Microsoft.Network/publicIPAddresses',variables('edgePublicIpName'))]"
+                            },
+                            "subnet": {
+                                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('edgeVnetName'), variables('edgeVnetSubnetName'))]"
+                            },
+                            "primary": true,
+                            "privateIPAddressVersion": "IPv4"
+                        }
+                    }
+                ],
+                "dnsSettings": {
+                    "dnsServers": []
+                },
+                "enableAcceleratedNetworking": false,
+                "enableIPForwarding": false
+            }
+        },
+        {
+            // VNet 4 edgeVm
+            "type": "Microsoft.Compute/virtualMachines",
+            "apiVersion": "2021-11-01",
+            "name": "[variables('edgeVmName')]",
+            "location": "[parameters('location')]",
+            "tags": {
+                "environment": "[parameters('environment')]",
+                "application": "[parameters('applicationShortName')]"
+            },
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/networkInterfaces', variables('edgeNicName'))]"
+            ],
+            "properties": {
+                "hardwareProfile": {
+                    // Standard_DS1_v2 => vCPU=1; RAM=3.5GB, IOPS=3200
+                    "vmSize": "Standard_DS1_v2"
+                },
+                "storageProfile": {
+                    /**
+                    "imageReference": {
+                        "publisher": "Canonical",
+                        "offer": "UbuntuServer",
+                        "sku": "18.04-LTS",
+                        "version": "latest"
+                    },
+                    "imageReference": {
+                        "publisher": "Canonical",
+                        "offer": "0001-com-ubuntu-server-jammy",
+                        "sku": "22_04-lts",
+                        "version": "latest"
+                    },
+                    **/
+                    "imageReference": {
+                        "publisher": "Canonical",
+                        "offer": "0001-com-ubuntu-server-focal",
+                        "sku": "20_04-lts",
+                        "version": "latest"
+                    },
+                    "osDisk": {
+                        "name": "[variables('edgeVmDiskName')]",
+                        "deleteOption": "Delete",
+                        "createOption": "FromImage"
+                    }
+                },
+                "osProfile": {
+                    "computerName": "[variables('edgeVmName')]",
+                    "adminUsername": "[parameters('edgeVmAdminUser')]",
+                    "adminPassword": "[parameters('edgeVmAdminPassword')]",
+                    // Install the packages for edge device and set the connectionstring, see cloud-init.txt
+                    // Requires the set variable dcs in arm
+                    "customData": "[base64(concat('#cloud-config\n# author: Michael\n# cloud-config based on repo template: https://github.com/Azure/iotedge-vm-deploy/tree/1.2.0\n# see: https://docs.microsoft.com/en-us/azure/virtual-machines/linux/tutorial-automate-vm-deployment\n# use genoneline.py for arm-template customData part\napt:\n  preserve_sources_list: true\n  sources:\n    msft.list:\n      # source: \"deb https://packages.microsoft.com/ubuntu/18.04/multiarch/prod bionic main\"\n      source: \"deb https://packages.microsoft.com/ubuntu/20.04/prod focal main\"\n      key: |\n        -----BEGIN PGP PUBLIC KEY BLOCK-----\n        Version: GnuPG v1.4.7 (GNU/Linux)\n\n        mQENBFYxWIwBCADAKoZhZlJxGNGWzqV+1OG1xiQeoowKhssGAKvd+buXCGISZJwT\n        LXZqIcIiLP7pqdcZWtE9bSc7yBY2MalDp9Liu0KekywQ6VVX1T72NPf5Ev6x6DLV\n        7aVWsCzUAF+eb7DC9fPuFLEdxmOEYoPjzrQ7cCnSV4JQxAqhU4T6OjbvRazGl3ag\n        OeizPXmRljMtUUttHQZnRhtlzkmwIrUivbfFPD+fEoHJ1+uIdfOzZX8/oKHKLe2j\n        H632kvsNzJFlROVvGLYAk2WRcLu+RjjggixhwiB+Mu/A8Tf4V6b+YppS44q8EvVr\n        M+QvY7LNSOffSO6Slsy9oisGTdfE39nC7pVRABEBAAG0N01pY3Jvc29mdCAoUmVs\n        ZWFzZSBzaWduaW5nKSA8Z3Bnc2VjdXJpdHlAbWljcm9zb2Z0LmNvbT6JATUEEwEC\n        AB8FAlYxWIwCGwMGCwkIBwMCBBUCCAMDFgIBAh4BAheAAAoJEOs+lK2+EinPGpsH\n        /32vKy29Hg51H9dfFJMx0/a/F+5vKeCeVqimvyTM04C+XENNuSbYZ3eRPHGHFLqe\n        MNGxsfb7C7ZxEeW7J/vSzRgHxm7ZvESisUYRFq2sgkJ+HFERNrqfci45bdhmrUsy\n        7SWw9ybxdFOkuQoyKD3tBmiGfONQMlBaOMWdAsic965rvJsd5zYaZZFI1UwTkFXV\n        KJt3bp3Ngn1vEYXwijGTa+FXz6GLHueJwF0I7ug34DgUkAFvAs8Hacr2DRYxL5RJ\n        XdNgj4Jd2/g6T9InmWT0hASljur+dJnzNiNCkbn9KbX7J/qK1IbR8y560yRmFsU+\n        NdCFTW7wY0Fb1fWJ+/KTsC4=\n        =J6gs\n        -----END PGP PUBLIC KEY BLOCK----- \npackages:\n  - moby-cli\n  - moby-engine\nwrite_files:\n  - path: /etc/docker/daemon.json\n    content: |\n      {\n          \"log-driver\": \"json-file\",\n          \"log-opts\": {\n              \"max-size\": \"10m\",\n              \"max-file\": \"100\"\n          },\n          \"default-address-pools\": [\n            {\n              \"base\": \"192.168.100.0/24\",\n              \"size\": 27\n            }\n          ]\n      }\n  - path: /etc/aziot/config.toml\n    content: |\n      # Provisioning configuration\n      # --------------------------\n      ## Manual provisioning with connection string\n      #\n      [provisioning]\n      source = \"manual\"\n      connection_string = \nruncmd:\n  # ARM Template injection for variable assignment\n  - dcs=\"', variables('dcs'),'\"\n  - |\n      set -x\n      (\n        echo \"Device connection string: $dcs\"\n\n        # Wait for docker daemon to start\n        while [ $(ps -ef | grep -v grep | grep docker | wc -l) -le 0 ]; do \n          sleep 3\n        done\n\n        apt install -y aziot-edge=1.3.0-1\n        echo \"done aziot-edge\"\n\n        if [ ! -z $dcs ]; then\n          # the file /etc/aziot/config.toml should already exist. Now set the connectionstring\n          sed -i \"s#\\(connection_string = \\).*#\\1\\\"$dcs\\\"#g\" /etc/aziot/config.toml\n          iotedge config apply -c /etc/aziot/config.toml\n        fi\n\n        echo \"enable Swap Management (requires restart!)\"\n        sed -i \"s/GRUB_CMDLINE_LINUX=\\\"\\\"/GRUB_CMDLINE_LINUX=\\\"cgroup_enable=memory swapaccount=1\\\"/\" /etc/default/grub\n        mkdir /etc/default/grub.d        \n        sed -i \"s/GRUB_CMDLINE_LINUX_DEFAULT=\\\"\\\"/GRUB_CMDLINE_LINUX_DEFAULT=\\\"console=ttyS0 group_enable=memory swapaccount=1\\\"/\" /etc/default/grub.d/50-cloudimg-settings.cfg\n        update-grub\n      ) &\n# Capture all subprocess output into a logfile. Useful for troubleshooting cloud-init issues\noutput: { all: \"| tee -a /var/log/cloud-init-output.log\" }\n# Perform a reboot once cloud-init has completed.\npower_state:\n  delay: 1\n  mode: reboot\n  message: Rebooting machine\n'))]",
+                    "linuxConfiguration": {
+                        "disablePasswordAuthentication": false
+                    }
+                },
+                "networkProfile": {
+                    "networkInterfaces": [
+                        {
+                            "id": "[resourceId('Microsoft.Network/networkInterfaces', variables('edgeNicName'))]"
+                        }
+                    ]
+                }
+            }
+        }
+    ],
+    "outputs": {
+        "PublicFQDN": {
+            "type": "string",
+            "value": "[concat('FQDN: ', reference(resourceId('Microsoft.Network/publicIPAddresses', variables('edgePublicIpName'))).dnsSettings.fqdn)]"
+        },
+        "PublicSSH": {
+            "type": "string",
+            "value": "[concat('SSH : ssh ', reference(resourceId('Microsoft.Compute/virtualMachines', variables('edgeVmName'))).osProfile.adminUsername, '@', reference(resourceId('Microsoft.Network/publicIPAddresses', variables('edgePublicIpName'))).dnsSettings.fqdn)]"
+        }
+    }
+}
