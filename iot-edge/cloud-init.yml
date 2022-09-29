@@ -81,7 +81,8 @@ runcmd:
           sleep 3
         done
 
-        apt install -y aziot-edge=1.3.0-1
+        # 29.09.2022: now the LTS is 1.4! we should update
+        apt install -y -f aziot-edge=1.3.0-1
         echo "done aziot-edge"
 
         if [ ! -z $dcs ]; then
@@ -90,6 +91,7 @@ runcmd:
           iotedge config apply -c /etc/aziot/config.toml
         fi
 
+        # ToDo: Move to bootcmd
         echo "enable Swap Management (requires restart!)"
         sed -i "s/GRUB_CMDLINE_LINUX=\"\"/GRUB_CMDLINE_LINUX=\"cgroup_enable=memory swapaccount=1\"/" /etc/default/grub
         mkdir /etc/default/grub.d        
