@@ -12,26 +12,27 @@ az iot hub create --resource-group cloudinit-dev-rg --name cloudinit-dev-iot --s
 # create edge device in the iot hub
 az iot hub device-identity create --hub-name cloudinit-dev-iot --edge-enabled true --device-id cloud-init-edge-01
 
-# deploy manifest to device (See iot-edge folder!)
+# deploy manifest to device
 az iot edge set-modules --hub-name cloudinit-dev-iot --device-id cloud-init-edge-01 --content deployment.cloud-init-edge-01.amd64.json
 ```
 
 ## Deploy az vm
 
 ```bash
-# create Ressource Group
-az group create --name cloudinit-edge-dev-rg --location westeurope
+az login
+az account set --subscription "yoursubscription"
 
-# deploy edge vm
-az deployment group create \
---resource-group cloudinit-edge-dev-rg \
---template-file "cloudinitedgehostDeploy.jsonc" \
---parameters cloudinitedgehostDeploy.parameters.dev.json edgeVmConnectionString=$(az iot hub device-identity connection-string show --device-id cloud-init-edge-01 --hub-name cloudinit-dev-iot -o tsv)
+cd terraform
+terraform init -upgrade
+terraform plan
+terraform apply --auto-approve
 ```
 
 ## Cleanup
 
 ```bash
+terraform destroy
+
 # Delete resource groups
 az group delete --yes --no-wait --name cloudinit-edge-dev-rg
 az group delete --yes --no-wait --name cloudinit-dev-rg
